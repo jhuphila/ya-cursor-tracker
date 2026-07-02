@@ -1,0 +1,20 @@
+# Copy to config/tracker_config.yaml and adjust paths.
+# Paths are relative to this file's directory unless absolute.
+
+output_dir: ../cursor-exports
+interactions_csv: interactions.csv
+sample_csv: interactions_sample.csv
+sample_head_rows: 50
+sample_tail_rows: 0
+checkpoint_db: interactions_checkpoint.sqlite3
+
+# Optional: limit bubble-derived interactions (ms epoch). Usually omit for full history.
+# since_timestamp_ms: null
+
+# Override when Cursor stores data elsewhere (SSH / portable installs):
+# state_vscdb: null
+# workspace_storage: null
+# ai_tracking_db: null
+
+# Optional YAML rules (copy attribution_rules.example.yaml and point here):
+# attribution_rules_path: ./attribution_rules.yaml

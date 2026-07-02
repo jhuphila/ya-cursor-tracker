@@ -1,0 +1,11 @@
+# Default config — override paths if Cursor data lives elsewhere.
+# Paths are relative to this file's directory unless absolute.
+
+output_dir: ../cursor-exports
+interactions_csv: interactions.csv
+sample_csv: interactions_sample.csv
+sample_head_rows: 50
+sample_tail_rows: 0
+checkpoint_db: interactions_checkpoint.sqlite3
+
+# Optional: attribution_rules_path: ./attribution_rules.yaml

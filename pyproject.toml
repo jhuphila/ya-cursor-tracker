@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ya-cursor-tracker"
+version = "0.1.0"
+description = "Export Cursor AI interactions to CSV with checkpoint dedupe"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyyaml>=6.0.1",
+]
+
+[project.scripts]
+cursor-export-interactions = "tracker.export_interactions:main"
+cursor-install-export-hook = "tracker.install_hook:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["tracker*"]

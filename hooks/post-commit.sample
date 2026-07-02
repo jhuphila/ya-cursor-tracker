@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Sample post-commit hook — prefer: python -m tracker.install_hook --repo /path/to/repo
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+exec python -m tracker.export_interactions --config "$ROOT/config/tracker_config.yaml" || exit 0
