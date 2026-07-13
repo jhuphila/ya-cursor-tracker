@@ -6,3 +6,4 @@ cursor-exports/
 *.egg-info/
 dist/
 build/
+usage-events*.csv
