@@ -48,16 +48,16 @@ For periodic catch-ups, schedule the same command as cron / Task Scheduler.
 1. **commit-linked**: `~/.cursor/ai-tracking/ai-code-tracking.db` (`composer` rows) → git root from touched files.
 2. **workspace-sqlite** (`workspace-db`): `workspaceStorage/*/state.vscdb` `composer.composerData` `allComposers` → workspace folder → git root (Cursor ≤2.6 style).
 3. **global-composer-headers**: global `globalStorage/state.vscdb` `ItemTable` key `composer.composerHeaders` — `allComposers[].workspaceIdentifier` links each `composerId` to a workspace hash or folder URI (Cursor **3.0+** central index; see [cursaves](https://github.com/Callum-Ward/cursaves/blob/main/docs/how-cursor-stores-chats.md)).
-4. **global-composer-data**: same global DB, `composerData:{composerId}` in `cursorDiskKV` / `ItemTable` — `context.fileSelections` / `folderSelections` / `terminalSelections` URIs → git root when (1)–(3) did not map the chat.
+4. **global-composer-data**: same global DB, `composerData:{composerId}` in `cursorDiskKV` / `ItemTable` — prefers embedded `workspaceIdentifier` (title + workspace binding for chats missing from `composer.composerHeaders`), then `context.fileSelections` / `folderSelections` / `terminalSelections` and `codeBlockData` file URIs → git root when (1)–(3) did not map the chat.
 5. **bubble-context** / **bubble-no-files**: `bubbleId:*` blobs — `relevantFiles` / `recentlyViewedFiles`, or no resolvable path.
 
-The CSV **`source_layer`** reflects which mechanism applied for that conversation’s bubble-derived attribution pass (`global-composer-headers` and `global-composer-data` appear when the newer global sources supplied the workspace/repo link).
+The CSV **`source_layer`** reflects which mechanism applied for that conversation’s bubble-derived attribution pass (`global-composer-headers` and `global-composer-data` appear when the newer global sources supplied the workspace/repo link). When ai-tracking only yields `__unattributed__` (common for remote/WSL paths), the exporter overlays a workspace/composer mapping from (2)–(4) when available.
 
 Per-interaction rows add `repo_remote_url` via `git remote get-url origin` when the resolved path is a local git checkout.
 
 ## Data model
 
-CSV columns are defined in `tracker/csv_store.py` (`CSV_FIELDNAMES`). Each row includes **`conversation_title`** when Cursor stores it in composer metadata (`allComposers` in workspace `composer.composerData`, global `composer.composerHeaders`, or legacy global `composer.composerData`).
+CSV columns are defined in `tracker/csv_store.py` (`CSV_FIELDNAMES`). Each row includes **`conversation_title`** when Cursor stores it in composer metadata (`allComposers` in workspace `composer.composerData`, global `composer.composerHeaders`, legacy global `composer.composerData`, or the per-chat `composerData:{id}` blob — the last of these is required for many recent chats that never appear in `composer.composerHeaders`).
 
 If you already have an `interactions.csv` from an older schema, either point `interactions_csv` at a new filename or delete the old CSV and checkpoint database so the new header (with `conversation_title`) can be written cleanly.
 

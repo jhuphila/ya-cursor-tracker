@@ -314,6 +314,26 @@ def conversation_ids_from_bubble_keys(state_db: Path) -> set[str]:
     return out
 
 
+def _root_from_workspace_identifier(
+    wi: Any,
+    workspace_storage: Path,
+) -> tuple[str | None, str]:
+    """Resolve (repo_root, workspace_id_hint) from a composer workspaceIdentifier object."""
+    if not isinstance(wi, dict):
+        return None, ""
+    ws_id_hint = ""
+    root: str | None = None
+    wid = wi.get("id")
+    if isinstance(wid, str) and wid.strip():
+        ws_id_hint = wid.strip()
+        root = resolve_root_from_workspace_storage(workspace_storage, ws_id_hint)
+    if root is None:
+        p = path_from_uri_obj(wi.get("uri"))
+        if p is not None:
+            root = folder_to_repo_root(p)
+    return root, ws_id_hint
+
+
 def enrich_workspace_map_from_global_headers(
     global_db: Path,
     workspace_storage: Path,
@@ -338,19 +358,10 @@ def enrich_workspace_map_from_global_headers(
             ws.conv_to_title[cid_s] = title
         if cid_s in ws.conv_to_root:
             continue
-        wi = comp.get("workspaceIdentifier")
-        root: str | None = None
-        ws_id_hint = ""
-        if isinstance(wi, dict):
-            wid = wi.get("id")
-            if isinstance(wid, str) and wid.strip():
-                ws_id_hint = wid.strip()
-                root = resolve_root_from_workspace_storage(workspace_storage, ws_id_hint)
-            if root is None:
-                u = wi.get("uri")
-                p = path_from_uri_obj(u)
-                if p is not None:
-                    root = folder_to_repo_root(p)
+        root, ws_id_hint = _root_from_workspace_identifier(
+            comp.get("workspaceIdentifier"),
+            workspace_storage,
+        )
         if root:
             ws.conv_to_root[cid_s] = root
             ws.conv_to_attribution_source[cid_s] = "global-composer-headers"
@@ -383,6 +394,29 @@ def _git_root_from_context_blob(blob: dict[str, Any]) -> str | None:
     return None
 
 
+def _git_root_from_code_block_data(blob: dict[str, Any]) -> str | None:
+    """Fall back to file URIs used as keys in composerData.codeBlockData."""
+    cbd = blob.get("codeBlockData")
+    if not isinstance(cbd, dict):
+        return None
+    for key in cbd:
+        if not isinstance(key, str) or not key.strip():
+            continue
+        p = decode_vscode_uri(key) if "://" in key or key.startswith("file:") else _normalise_path(key)
+        if p is None:
+            continue
+        r = find_git_root(str(p))
+        if r:
+            return r
+        if p.is_dir():
+            return folder_to_repo_root(p)
+        parent = p.parent
+        r = find_git_root(str(parent))
+        if r:
+            return r
+    return None
+
+
 def _load_composer_data_blob(con: sqlite3.Connection, cid: str) -> dict[str, Any] | None:
     key = f"composerData:{cid}"
     for table in ("cursorDiskKV", "ItemTable"):
@@ -402,10 +436,17 @@ def _load_composer_data_blob(con: sqlite3.Connection, cid: str) -> dict[str, Any
 
 def enrich_roots_from_composer_data_for_conv_ids(
     global_db: Path,
+    workspace_storage: Path,
     ws: WorkspaceConvMap,
     conv_ids: set[str],
 ) -> None:
-    """For conversations still without a workspace mapping, mine composerData:* context for git roots."""
+    """
+    Fill title + repo from per-conversation composerData:{id} blobs.
+
+    Recent Cursor builds often omit chats from composer.composerHeaders while still
+    storing name and workspaceIdentifier on the composerData row itself. Context
+    file/folder selections and codeBlockData URIs remain fallbacks for the root.
+    """
     if not global_db.exists() or not conv_ids:
         return
     try:
@@ -414,21 +455,46 @@ def enrich_roots_from_composer_data_for_conv_ids(
         return
     try:
         for cid in conv_ids:
-            if cid in ws.conv_to_root:
-                continue
             blob = _load_composer_data_blob(con, cid)
             if not blob:
                 continue
-            root = _git_root_from_context_blob(blob)
+            title = _composer_display_title(blob)
+            if title and cid not in ws.conv_to_title:
+                ws.conv_to_title[cid] = title
+            if cid in ws.conv_to_root:
+                continue
+            root, ws_id_hint = _root_from_workspace_identifier(
+                blob.get("workspaceIdentifier"),
+                workspace_storage,
+            )
+            if root is None:
+                root = _git_root_from_context_blob(blob)
+            if root is None:
+                root = _git_root_from_code_block_data(blob)
             if root:
                 ws.conv_to_root[cid] = root
                 ws.conv_to_attribution_source[cid] = "global-composer-data"
+                if ws_id_hint and cid not in ws.conv_to_workspace_id:
+                    ws.conv_to_workspace_id[cid] = ws_id_hint
     finally:
         con.close()
 
 
+def apply_workspace_map_to_attribution(
+    conv_attr: dict[str, dict[str, str]],
+    ws: WorkspaceConvMap,
+) -> None:
+    """Prefer workspace/composer mapping when ai-tracking left repo as __unattributed__."""
+    for cid, root in ws.conv_to_root.items():
+        cur = conv_attr.get(cid)
+        if cur and cur.get("repo_path") not in ("", None, "__unattributed__"):
+            continue
+        src = ws.conv_to_attribution_source.get(cid, "workspace-sqlite")
+        conv_attr[cid] = {"repo_path": root, "layer": src or "workspace-sqlite"}
+
+
 def read_global_composer_titles(state_db: Path) -> dict[str, str]:
-    """conversation_id -> title from global User/state.vscdb ItemTable, if present."""
+    """conversation_id -> title from legacy global ItemTable composer.composerData, if present."""
     out: dict[str, str] = {}
     if not state_db.exists():
         return out
@@ -970,11 +1036,17 @@ def load_raw_interactions(paths: CursorPaths, since_ts_ms: int | None) -> tuple[
         paths.workspace_storage,
         ws,
     )
-    enrich_roots_from_composer_data_for_conv_ids(paths.state_vscdb, ws, bubble_conv_ids)
+    enrich_roots_from_composer_data_for_conv_ids(
+        paths.state_vscdb,
+        paths.workspace_storage,
+        ws,
+        bubble_conv_ids,
+    )
     layer1 = read_ai_tracking(paths.ai_tracking_db, bubble_tokens, None)
     known = {str(c["conversationId"]) for c in layer1 if c.get("conversationId")}
     layer2 = read_bubbles(paths.state_vscdb, None, known, bubble_tokens, ws)
     conv_attr = merge_conv_attribution(layer1, layer2)
+    apply_workspace_map_to_attribution(conv_attr, ws)
     conv_titles: dict[str, str] = dict(ws.conv_to_title)
     for cid, title in read_global_composer_titles(paths.state_vscdb).items():
         if cid not in conv_titles or not conv_titles[cid]:
