@@ -9,3 +9,8 @@ sample_tail_rows: 0
 checkpoint_db: interactions_checkpoint.sqlite3
 
 # Optional: attribution_rules_path: ./attribution_rules.yaml
+
+# Cursor dashboard Usage → Export CSV. Path may be a file, a directory, or a
+# glob; when multiple usage-events* files exist, the newest by filename date wins
+# (usage-events-2026-07-13 > usage-events-2026-07-12).
+usage_events_csv: ..

@@ -1,5 +1,6 @@
 """
 CLI: export Cursor interactions to CSV with checkpoint dedupe, sample file, and stats.
+Optionally join Cost from a Cursor dashboard usage-events CSV.
 """
 
 from __future__ import annotations
@@ -21,14 +22,23 @@ from tracker.csv_store import (
     CheckpointStore,
     ExportStats,
     compute_stats,
+    migrate_interactions_csv_schema,
     ms_to_iso,
     print_stats_json,
+    read_interactions_csv,
+    rewrite_interactions_csv,
     write_interactions_csv,
     write_sample_csv,
 )
 from tracker.cursor_sources import load_raw_interactions
 from tracker.paths import CursorPaths, default_cursor_paths
 from tracker.repo_attribution import git_remote_origin, interaction_id, load_attribution_rules, resolve_attribution
+from tracker.usage_billing import (
+    DEFAULT_USAGE_MATCH_TOLERANCE_MS,
+    apply_usage_costs_to_rows,
+    load_usage_events,
+    resolve_usage_csv_path,
+)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -97,6 +107,7 @@ def _build_csv_row(
         "message_chars_assistant": int(raw.get("message_chars_assistant", 0) or 0),
         "tool_call_chars": int(raw.get("tool_call_chars", 0) or 0),
         "tool_call_tokens_est": int(raw.get("tool_call_tokens_est", 0) or 0),
+        "Cost": "",
         "attribution_rule_id": rule_id,
         "attribution_confidence": f"{conf:.4f}",
         "_timestamp_ms": ts_ms,
@@ -104,7 +115,64 @@ def _build_csv_row(
     }
 
 
-def run_export(cfg_path: Path, *, dry_run: bool) -> int:
+def _resolve_usage_csv(
+    cfg: dict[str, Any],
+    base: Path,
+    cli_usage_csv: Path | None,
+) -> Path | None:
+    try:
+        if cli_usage_csv is not None:
+            return resolve_usage_csv_path(cli_usage_csv, Path.cwd())
+        raw = cfg.get("usage_events_csv")
+        if not raw:
+            return None
+        return resolve_usage_csv_path(str(raw), base)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return None
+
+
+def _apply_usage_costs(
+    interactions_csv: Path,
+    usage_csv: Path,
+    *,
+    tolerance_ms: int,
+    dry_run: bool,
+    sample_csv: Path | None = None,
+    sample_head: int = 0,
+    sample_tail: int = 0,
+) -> dict[str, Any]:
+    events = load_usage_events(usage_csv)
+    rows = read_interactions_csv(interactions_csv)
+    if not rows and not interactions_csv.exists():
+        raise FileNotFoundError(f"Interactions CSV not found: {interactions_csv}")
+    enriched, stats = apply_usage_costs_to_rows(rows, events, tolerance_ms=tolerance_ms)
+    if not dry_run:
+        if interactions_csv.exists():
+            migrate_interactions_csv_schema(interactions_csv)
+        rewrite_interactions_csv(interactions_csv, enriched)
+        if sample_csv is not None and (sample_head > 0 or sample_tail > 0):
+            write_sample_csv(sample_csv, enriched, head=sample_head, tail=sample_tail)
+    return {
+        "usage_csv": str(usage_csv),
+        "interactions_csv": str(interactions_csv),
+        "usage_events": stats.usage_events,
+        "interactions": stats.interactions,
+        "matched": stats.matched,
+        "unmatched_usage_events": stats.unmatched_usage,
+        "unmatched_interactions": stats.unmatched_interactions,
+        "tolerance_ms": stats.tolerance_ms,
+        "dry_run": dry_run,
+    }
+
+
+def run_export(
+    cfg_path: Path,
+    *,
+    dry_run: bool,
+    usage_csv: Path | None = None,
+    apply_usage_only: bool = False,
+) -> int:
     cfg = _load_yaml(cfg_path)
     base = cfg_path.parent.resolve()
     paths = _resolve_paths(cfg)
@@ -125,6 +193,35 @@ def run_export(cfg_path: Path, *, dry_run: bool) -> int:
     checkpoint_path = Path(cfg.get("checkpoint_db", "interactions_checkpoint.sqlite3"))
     if not checkpoint_path.is_absolute():
         checkpoint_path = out_dir / checkpoint_path
+
+    usage_path = _resolve_usage_csv(cfg, base, usage_csv)
+    tolerance_ms = int(cfg.get("usage_match_tolerance_ms", DEFAULT_USAGE_MATCH_TOLERANCE_MS) or DEFAULT_USAGE_MATCH_TOLERANCE_MS)
+    head_n = int(cfg.get("sample_head_rows", 50))
+    tail_n = int(cfg.get("sample_tail_rows", 0))
+
+    if apply_usage_only:
+        if usage_path is None:
+            print(
+                "Error: --apply-usage-only needs a usage export. Set usage_events_csv "
+                "(file, directory, or glob like ../usage-events*) or pass --usage-csv.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            result = _apply_usage_costs(
+                interactions_csv,
+                usage_path,
+                tolerance_ms=tolerance_ms,
+                dry_run=dry_run,
+                sample_csv=sample_csv,
+                sample_head=head_n,
+                sample_tail=tail_n,
+            )
+        except (OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps({"usage_cost_join": result}, indent=2))
+        return 0
 
     rules_path = cfg.get("attribution_rules_path")
     rules: dict[str, Any] = {}
@@ -164,14 +261,15 @@ def run_export(cfg_path: Path, *, dry_run: bool) -> int:
         new_rows.append({k: v for k, v in r.items() if not k.startswith("_")})
 
     try:
+        if interactions_csv.exists() and not dry_run:
+            migrate_interactions_csv_schema(interactions_csv)
         appended, _ = write_interactions_csv(interactions_csv, new_rows, dry_run=dry_run)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    head_n = int(cfg.get("sample_head_rows", 50))
-    tail_n = int(cfg.get("sample_tail_rows", 0))
     if not dry_run and (head_n > 0 or tail_n > 0):
+        # Sample from newly written rows only; usage join may refresh sample below.
         write_sample_csv(sample_csv, new_rows, head=head_n, tail=tail_n)
 
     if not dry_run and new_rows:
@@ -188,6 +286,22 @@ def run_export(cfg_path: Path, *, dry_run: bool) -> int:
     sample_path = sample_csv if not dry_run and (head_n > 0 or tail_n > 0) else None
     print_stats_json(stats, sample_path, interactions_csv)
 
+    if usage_path is not None:
+        try:
+            result = _apply_usage_costs(
+                interactions_csv,
+                usage_path,
+                tolerance_ms=tolerance_ms,
+                dry_run=dry_run,
+                sample_csv=sample_csv if not dry_run else None,
+                sample_head=head_n,
+                sample_tail=tail_n,
+            )
+        except (OSError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps({"usage_cost_join": result}, indent=2))
+
     if dry_run:
         # show a preview of up to 5 rows as JSON (subset of fields)
         preview = []
@@ -202,6 +316,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Export Cursor interactions to CSV")
     parser.add_argument("--config", type=Path, default=Path("config/tracker_config.yaml"), help="Path to tracker_config.yaml")
     parser.add_argument("--dry-run", action="store_true", help="Do not write files or update checkpoint")
+    parser.add_argument(
+        "--usage-csv",
+        type=Path,
+        default=None,
+        help="Cursor dashboard usage-events CSV (adds Cost via timestamp match)",
+    )
+    parser.add_argument(
+        "--apply-usage-only",
+        action="store_true",
+        help="Only join Cost from usage CSV onto existing interactions.csv (skip Cursor DB export)",
+    )
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     args = parser.parse_args(argv)
     if args.version:
@@ -214,7 +339,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: config not found: {args.config}", file=sys.stderr)
         print("Copy config/tracker_config.example.yaml to config/tracker_config.yaml", file=sys.stderr)
         return 1
-    return run_export(args.config, dry_run=bool(args.dry_run))
+    return run_export(
+        args.config,
+        dry_run=bool(args.dry_run),
+        usage_csv=args.usage_csv,
+        apply_usage_only=bool(args.apply_usage_only),
+    )
 
 
 if __name__ == "__main__":

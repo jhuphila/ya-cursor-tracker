@@ -29,6 +29,7 @@ CSV_FIELDNAMES: list[str] = [
     "message_chars_assistant",
     "tool_call_chars",
     "tool_call_tokens_est",
+    "Cost",
     "attribution_rule_id",
     "attribution_confidence",
 ]
@@ -97,6 +98,60 @@ def _existing_csv_header_matches(path: Path, expected: Sequence[str]) -> bool:
     return list(row) == list(expected)
 
 
+def read_interactions_csv(path: Path) -> list[dict[str, Any]]:
+    """Load all interaction rows (any prior header); missing fields become empty."""
+    if not path.exists():
+        return []
+    with open(path, newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        return [dict(row) for row in reader]
+
+
+def rewrite_interactions_csv(path: Path, rows: Sequence[dict[str, Any]]) -> None:
+    """Overwrite interactions CSV with the current schema."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r.get(k, "") for k in CSV_FIELDNAMES})
+
+
+def migrate_interactions_csv_schema(path: Path) -> bool:
+    """
+    If an existing interactions.csv is missing only newly added columns (e.g. Cost),
+    rewrite it in place with blanks for those fields. Returns True when a rewrite ran.
+    """
+    if not path.exists():
+        return False
+    try:
+        with open(path, newline="", encoding="utf-8") as fh:
+            reader = csv.reader(fh)
+            header = next(reader, None)
+    except OSError:
+        return False
+    if not header:
+        return False
+    if list(header) == list(CSV_FIELDNAMES):
+        return False
+    old_set = set(header)
+    new_set = set(CSV_FIELDNAMES)
+    unexpected = sorted(old_set - new_set)
+    if unexpected:
+        raise ValueError(
+            f"Existing CSV header does not match current schema (unexpected columns {unexpected} in {path}). "
+            f"Use a new output path or remove the CSV and checkpoint DB, then re-export."
+        )
+    if not old_set <= new_set:
+        raise ValueError(
+            f"Existing CSV header does not match current schema. "
+            f"Use a new output path or remove {path} and the checkpoint DB, then re-export."
+        )
+    rows = read_interactions_csv(path)
+    rewrite_interactions_csv(path, rows)
+    return True
+
+
 def write_interactions_csv(
     output_csv: Path,
     rows: Iterable[dict[str, Any]],
@@ -111,11 +166,13 @@ def write_interactions_csv(
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     new_file = not output_csv.exists()
     if not new_file and not _existing_csv_header_matches(output_csv, CSV_FIELDNAMES):
-        raise ValueError(
-            f"Existing CSV header does not match current schema (expected columns including "
-            f"'conversation_title' and 'context_window_delta'). Use a new output path or remove {output_csv} "
-            f"and the checkpoint DB, then re-export."
-        )
+        migrate_interactions_csv_schema(output_csv)
+        if not _existing_csv_header_matches(output_csv, CSV_FIELDNAMES):
+            raise ValueError(
+                f"Existing CSV header does not match current schema (expected columns including "
+                f"'conversation_title', 'context_window_delta', and 'Cost'). Use a new output path or remove "
+                f"{output_csv} and the checkpoint DB, then re-export."
+            )
     with open(output_csv, "a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDNAMES, extrasaction="ignore")
         if new_file:

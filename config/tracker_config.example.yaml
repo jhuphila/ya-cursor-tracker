@@ -18,3 +18,10 @@ checkpoint_db: interactions_checkpoint.sqlite3
 
 # Optional YAML rules (copy attribution_rules.example.yaml and point here):
 # attribution_rules_path: ./attribution_rules.yaml
+
+# Optional: Cursor dashboard Usage → Export CSV (adds a Cost column to interactions.csv).
+# Point at a directory, a glob, or a specific file. Multiple usage-events* files → newest
+# by filename date (usage-events-2026-07-13 beats usage-events-2026-07-12).
+# usage_events_csv: ..
+# usage_events_csv: ../usage-events*.csv
+# usage_match_tolerance_ms: 30000
