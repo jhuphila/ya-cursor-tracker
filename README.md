@@ -43,13 +43,13 @@ For periodic catch-ups, schedule the same command as cron / Task Scheduler.
 - **`config/tracker_config.yaml`**: output paths, sample row counts, optional `since_timestamp_ms`, optional overrides for `state_vscdb`, `workspace_storage`, `ai_tracking_db`, and optional `usage_events_csv`.
 - **`config/attribution_rules.example.yaml`**: copy to e.g. `attribution_rules.yaml`, reference from tracker config via `attribution_rules_path`. Supports manual conversation overrides, workspace hints, path prefix mappings, and repo URL aliases.
 
-## Dashboard Cost (usage-events CSV)
+## Dashboard Cost & Total Tokens (usage-events CSV)
 
-Cursor does **not** store Free / Included / $-amount billing in local SQLite. Export it from the website:
+Cursor does **not** store Free / Included / $-amount billing or billed total tokens in local SQLite. Export them from the website:
 
 1. Open [Cursor Dashboard → Usage](https://cursor.com/dashboard) → choose a date range → **Export CSV** (`usage-events-YYYY-MM-DD.csv`).
 2. Point the tracker at that file (config or CLI).
-3. Re-export from the dashboard and re-run whenever you want costs for newer conversations.
+3. Re-export from the dashboard and re-run whenever you want costs / totals for newer conversations.
 
 ```yaml
 # config/tracker_config.yaml — directory or glob; newest usage-events* wins by date in the name
@@ -59,10 +59,10 @@ usage_events_csv: ..
 ```
 
 ```bash
-# Export interactions and join Cost in one step (auto-picks newest usage-events* under ..)
+# Export interactions and join Cost / Total Tokens in one step (auto-picks newest usage-events* under ..)
 python -m tracker --config config/tracker_config.yaml
 
-# Or only refresh Cost on an existing interactions.csv
+# Or only refresh Cost / Total Tokens on an existing interactions.csv
 python -m tracker --config config/tracker_config.yaml --apply-usage-only
 
 # Optional explicit file / directory / glob
@@ -70,7 +70,7 @@ python -m tracker --config config/tracker_config.yaml --usage-csv usage-events-2
 python -m tracker --config config/tracker_config.yaml --usage-csv .
 ```
 
-Matching is **1:1 by timestamp** (within ±30s by default), with a soft preference when dashboard `Model` and local `model` look like the same family (`gpt-5.5-medium` ↔ `gpt-5.5`). The **`Cost`** cell is copied **verbatim** from the dashboard (`Free`, `Included`, `0.96`, …). Interactions with no match keep an empty `Cost` — nothing is estimated or invented. Usage events outside the local history (or beyond the tolerance window) stay unmatched.
+Matching is **1:1 by timestamp** (within ±30s by default), with a soft preference when dashboard `Model` and local `model` look like the same family (`gpt-5.5-medium` ↔ `gpt-5.5`). **`Cost`** and **`Total Tokens`** are copied **verbatim** from the dashboard (`Free` / `Included` / `0.96`, and the billed total token count). Interactions with no match keep those cells empty. Usage events outside the local history (or beyond the tolerance window) stay unmatched.
 
 ## How attribution works
 
@@ -88,7 +88,7 @@ Per-interaction rows add `repo_remote_url` via `git remote get-url origin` when 
 
 CSV columns are defined in `tracker/csv_store.py` (`CSV_FIELDNAMES`). Each row includes **`conversation_title`** when Cursor stores it in composer metadata (`allComposers` in workspace `composer.composerData`, global `composer.composerHeaders`, legacy global `composer.composerData`, or the per-chat `composerData:{id}` blob — the last of these is required for many recent chats that never appear in `composer.composerHeaders`).
 
-**`Cost`** is optional and only filled when you supply a dashboard `usage-events-*.csv` (see above). It is never estimated from token counts.
+**`Cost`** and **`Total Tokens`** are optional and only filled when you supply a dashboard `usage-events-*.csv` (see above).
 
 If you already have an `interactions.csv` from an older schema, either point `interactions_csv` at a new filename or delete the old CSV and checkpoint database so the new header (with `conversation_title`) can be written cleanly.
 
@@ -103,7 +103,7 @@ If you already have an `interactions.csv` from an older schema, either point `in
 
 ### Schema migration
 
-Adding columns such as **`Cost`** updates `CSV_FIELDNAMES`. If your existing `interactions.csv` only lacks new columns (old columns are still valid), the exporter **rewrites the header in place** and fills blanks. If the header has unexpected/removed columns, point `interactions_csv` at a new filename or delete the old CSV **and** the checkpoint `.sqlite3` file, then re-export from scratch.
+Adding columns such as **`Cost`** / **`Total Tokens`** updates `CSV_FIELDNAMES`. If your existing `interactions.csv` only lacks new columns (old columns are still valid), the exporter **rewrites the header in place** and fills blanks. If the header has unexpected/removed columns, point `interactions_csv` at a new filename or delete the old CSV **and** the checkpoint `.sqlite3` file, then re-export from scratch.
 
 ## Tests
 

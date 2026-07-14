@@ -30,6 +30,7 @@ CSV_FIELDNAMES: list[str] = [
     "tool_call_chars",
     "tool_call_tokens_est",
     "Cost",
+    "Total Tokens",
     "attribution_rule_id",
     "attribution_confidence",
 ]
@@ -170,7 +171,7 @@ def write_interactions_csv(
         if not _existing_csv_header_matches(output_csv, CSV_FIELDNAMES):
             raise ValueError(
                 f"Existing CSV header does not match current schema (expected columns including "
-                f"'conversation_title', 'context_window_delta', and 'Cost'). Use a new output path or remove "
+                f"'conversation_title', 'context_window_delta', 'Cost', and 'Total Tokens'). Use a new output path or remove "
                 f"{output_csv} and the checkpoint DB, then re-export."
             )
     with open(output_csv, "a", newline="", encoding="utf-8") as fh:

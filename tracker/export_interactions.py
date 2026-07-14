@@ -1,6 +1,6 @@
 """
 CLI: export Cursor interactions to CSV with checkpoint dedupe, sample file, and stats.
-Optionally join Cost from a Cursor dashboard usage-events CSV.
+Optionally join Cost and Total Tokens from a Cursor dashboard usage-events CSV.
 """
 
 from __future__ import annotations
@@ -108,6 +108,7 @@ def _build_csv_row(
         "tool_call_chars": int(raw.get("tool_call_chars", 0) or 0),
         "tool_call_tokens_est": int(raw.get("tool_call_tokens_est", 0) or 0),
         "Cost": "",
+        "Total Tokens": "",
         "attribution_rule_id": rule_id,
         "attribution_confidence": f"{conf:.4f}",
         "_timestamp_ms": ts_ms,
@@ -320,12 +321,12 @@ def main(argv: list[str] | None = None) -> int:
         "--usage-csv",
         type=Path,
         default=None,
-        help="Cursor dashboard usage-events CSV (adds Cost via timestamp match)",
+        help="Cursor dashboard usage-events CSV (adds Cost and Total Tokens via timestamp match)",
     )
     parser.add_argument(
         "--apply-usage-only",
         action="store_true",
-        help="Only join Cost from usage CSV onto existing interactions.csv (skip Cursor DB export)",
+        help="Only join Cost / Total Tokens from usage CSV onto existing interactions.csv (skip Cursor DB export)",
     )
     parser.add_argument("--version", action="store_true", help="Print version and exit")
     args = parser.parse_args(argv)

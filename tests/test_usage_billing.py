@@ -1,4 +1,4 @@
-"""Tests for dashboard usage-events Cost matching."""
+"""Tests for dashboard usage-events Cost / Total Tokens matching."""
 
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ def test_match_prefers_close_timestamp_and_model() -> None:
             ts_ms=parse_iso_to_ms("2026-07-09T20:27:06.621Z") or 0,
             model="gpt-5.5-medium",
             cost="0.47",
+            total_tokens="285073",
             kind="On-Demand",
             row_index=0,
         ),
@@ -57,14 +58,17 @@ def test_match_prefers_close_timestamp_and_model() -> None:
             ts_ms=parse_iso_to_ms("2026-07-09T20:14:18.172Z") or 0,
             model="composer-2.5-fast",
             cost="Included",
+            total_tokens="221401",
             kind="Included",
             row_index=1,
         ),
     ]
-    costs, stats = match_usage_costs(interactions, events, tolerance_ms=30_000)
+    matched, stats = match_usage_costs(interactions, events, tolerance_ms=30_000)
     assert stats.matched == 2
-    assert costs["a"] == "0.47"
-    assert costs["b"] == "Included"
+    assert matched["a"].cost == "0.47"
+    assert matched["a"].total_tokens == "285073"
+    assert matched["b"].cost == "Included"
+    assert matched["b"].total_tokens == "221401"
 
 
 def test_unmatched_cost_left_blank_not_fabricated() -> None:
@@ -83,6 +87,7 @@ def test_unmatched_cost_left_blank_not_fabricated() -> None:
             ts_ms=parse_iso_to_ms("2026-07-09T20:27:06.621Z") or 0,
             model="gpt-5.5-medium",
             cost="0.47",
+            total_tokens="285073",
             kind="On-Demand",
             row_index=0,
         ),
@@ -90,20 +95,49 @@ def test_unmatched_cost_left_blank_not_fabricated() -> None:
     out, stats = apply_usage_costs_to_rows(rows, events, tolerance_ms=30_000)
     assert stats.matched == 0
     assert out[0]["Cost"] == ""
+    assert out[0]["Total Tokens"] == ""
 
 
 def test_load_usage_events_reads_dashboard_csv(tmp_path: Path) -> None:
     p = tmp_path / "usage.csv"
     p.write_text(
-        "Date,Kind,Model,Cost\n"
-        '"2026-07-09T20:27:06.621Z","On-Demand","gpt-5.5-medium","0.47"\n'
-        '"2026-07-09T20:14:18.172Z","Included","composer-2.5-fast","Included"\n',
+        "Date,Kind,Model,Total Tokens,Cost\n"
+        '"2026-07-09T20:27:06.621Z","On-Demand","gpt-5.5-medium","285073","0.47"\n'
+        '"2026-07-09T20:14:18.172Z","Included","composer-2.5-fast","221401","Included"\n',
         encoding="utf-8",
     )
     events = load_usage_events(p)
     assert len(events) == 2
     assert events[0].cost == "0.47"
+    assert events[0].total_tokens == "285073"
     assert events[1].cost == "Included"
+    assert events[1].total_tokens == "221401"
+
+
+def test_apply_usage_sets_total_tokens() -> None:
+    from tracker.usage_billing import parse_iso_to_ms
+
+    rows = [
+        {
+            "interaction_id": "a",
+            "timestamp_utc": "2026-07-09T20:27:06.516Z",
+            "model": "gpt-5.5",
+        }
+    ]
+    events = [
+        UsageEvent(
+            ts_ms=parse_iso_to_ms("2026-07-09T20:27:06.621Z") or 0,
+            model="gpt-5.5-medium",
+            cost="0.47",
+            total_tokens="285073",
+            kind="On-Demand",
+            row_index=0,
+        ),
+    ]
+    out, stats = apply_usage_costs_to_rows(rows, events, tolerance_ms=30_000)
+    assert stats.matched == 1
+    assert out[0]["Cost"] == "0.47"
+    assert out[0]["Total Tokens"] == "285073"
 
 
 def test_one_to_one_greedy_no_double_assign() -> None:
@@ -118,14 +152,16 @@ def test_one_to_one_greedy_no_double_assign() -> None:
             ts_ms=parse_iso_to_ms("2026-07-09T20:27:06.550Z") or 0,
             model="gpt-5.5-medium",
             cost="0.10",
+            total_tokens="1000",
             kind="On-Demand",
             row_index=0,
         ),
     ]
-    costs, stats = match_usage_costs(interactions, events, tolerance_ms=30_000)
+    matched, stats = match_usage_costs(interactions, events, tolerance_ms=30_000)
     assert stats.matched == 1
-    assert len(costs) == 1
-    assert list(costs.values()) == ["0.10"]
+    assert len(matched) == 1
+    assert list(matched.values())[0].cost == "0.10"
+    assert list(matched.values())[0].total_tokens == "1000"
 
 
 def test_pick_newest_usage_events_by_filename_date(tmp_path: Path) -> None:

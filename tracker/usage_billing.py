@@ -1,10 +1,10 @@
 """
-Join Cursor dashboard usage-events CSV costs onto interaction rows.
+Join Cursor dashboard usage-events CSV fields onto interaction rows.
 
 Dashboard exports have no conversation_id; we match each usage event to at most
-one interaction by timestamp (with optional model compatibility), and copy the
-Cost cell verbatim (e.g. Free, Included, 0.96). Unmatched interactions keep an
-empty Cost — never invent billing values.
+one interaction by timestamp (with optional model compatibility), and copy
+Cost and Total Tokens verbatim. Unmatched interactions keep those cells empty
+— never invent billing values.
 """
 
 from __future__ import annotations
@@ -36,8 +36,15 @@ class UsageEvent:
     ts_ms: int
     model: str
     cost: str
+    total_tokens: str
     kind: str
     row_index: int
+
+
+@dataclass(frozen=True)
+class UsageMatchFields:
+    cost: str
+    total_tokens: str
 
 
 @dataclass(frozen=True)
@@ -106,6 +113,12 @@ def load_usage_events(path: Path) -> list[UsageEvent]:
         cost_key = fields.get("Cost") or fields.get("cost")
         model_key = fields.get("Model") or fields.get("model")
         kind_key = fields.get("Kind") or fields.get("kind")
+        total_key = (
+            fields.get("Total Tokens")
+            or fields.get("Total tokens")
+            or fields.get("total tokens")
+            or fields.get("TotalTokens")
+        )
         if not date_key or not cost_key:
             raise ValueError(
                 f"Usage CSV must include Date and Cost columns; got {list(reader.fieldnames)}"
@@ -116,11 +129,15 @@ def load_usage_events(path: Path) -> list[UsageEvent]:
             cost = str(row.get(cost_key, "") or "").strip()
             if ts is None or not cost:
                 continue
+            total_tokens = ""
+            if total_key:
+                total_tokens = str(row.get(total_key, "") or "").strip()
             out.append(
                 UsageEvent(
                     ts_ms=ts,
                     model=str(row.get(model_key, "") or "").strip() if model_key else "",
                     cost=cost,
+                    total_tokens=total_tokens,
                     kind=str(row.get(kind_key, "") or "").strip() if kind_key else "",
                     row_index=idx,
                 )
@@ -133,13 +150,13 @@ def match_usage_costs(
     events: Sequence[UsageEvent],
     *,
     tolerance_ms: int = DEFAULT_USAGE_MATCH_TOLERANCE_MS,
-) -> tuple[dict[str, str], UsageMatchStats]:
+) -> tuple[dict[str, UsageMatchFields], UsageMatchStats]:
     """
     Greedy 1:1 match: each usage event and each interaction used at most once.
 
     Score = |Δt| plus a penalty when models are incompatible, so close
     timestamp+model pairs win over pure timestamp collisions.
-    Returns map interaction_id -> Cost string (verbatim from the usage CSV).
+    Returns map interaction_id -> Cost / Total Tokens (verbatim from the usage CSV).
     """
     inter_meta: list[tuple[str, int, str]] = []
     for row in interactions:
@@ -170,24 +187,25 @@ def match_usage_costs(
 
     used_e: set[int] = set()
     used_i: set[int] = set()
-    costs: dict[str, str] = {}
+    matched: dict[str, UsageMatchFields] = {}
     for _score, _delta, ei, ii in candidates:
         if ei in used_e or ii in used_i:
             continue
         used_e.add(ei)
         used_i.add(ii)
         iid = inter_meta[ii][0]
-        costs[iid] = events[ei].cost
+        ev = events[ei]
+        matched[iid] = UsageMatchFields(cost=ev.cost, total_tokens=ev.total_tokens)
 
     stats = UsageMatchStats(
         usage_events=len(events),
         interactions=len(inter_meta),
-        matched=len(costs),
+        matched=len(matched),
         unmatched_usage=len(events) - len(used_e),
         unmatched_interactions=len(inter_meta) - len(used_i),
         tolerance_ms=tolerance_ms,
     )
-    return costs, stats
+    return matched, stats
 
 
 def apply_usage_costs_to_rows(
@@ -197,16 +215,21 @@ def apply_usage_costs_to_rows(
     tolerance_ms: int = DEFAULT_USAGE_MATCH_TOLERANCE_MS,
     clear_unmatched: bool = True,
 ) -> tuple[list[dict[str, Any]], UsageMatchStats]:
-    """Return copies of rows with Cost set from matched usage events."""
-    costs, stats = match_usage_costs(rows, events, tolerance_ms=tolerance_ms)
+    """Return copies of rows with Cost and Total Tokens from matched usage events."""
+    matched, stats = match_usage_costs(rows, events, tolerance_ms=tolerance_ms)
     out: list[dict[str, Any]] = []
     for row in rows:
         r = dict(row)
         iid = str(r.get("interaction_id") or "")
-        if iid in costs:
-            r["Cost"] = costs[iid]
-        elif clear_unmatched or "Cost" not in r:
-            r["Cost"] = ""
+        fields = matched.get(iid)
+        if fields is not None:
+            r["Cost"] = fields.cost
+            r["Total Tokens"] = fields.total_tokens
+        else:
+            if clear_unmatched or "Cost" not in r:
+                r["Cost"] = ""
+            if clear_unmatched or "Total Tokens" not in r:
+                r["Total Tokens"] = ""
         out.append(r)
     return out, stats
 
